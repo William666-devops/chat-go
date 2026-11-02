@@ -1,0 +1,11 @@
+/chat.db
+/chat.db-*
+/chat-server
+/my-go-app
+*.log
+/bin/
+.env
+/web/node_modules/
+/web/dist/
+/preview
+/.idea/
