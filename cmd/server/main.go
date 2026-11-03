@@ -12,14 +12,10 @@ type Client struct {
 	send chan string
 }
 
-type Event struct {
-	kind    string
-	conn    net.Conn
-	message string
-}
-
-var events = make(chan Event, 300)
 var clients = make(map[net.Conn]*Client)
+var register = make(chan *Client)
+var unregister = make(chan net.Conn)
+var messages = make(chan string)
 
 // TODO
 // 1. 能不能在高 IO 占用的地方优化为无锁设计
@@ -57,16 +53,20 @@ func main() {
 		//clients[conn] = true
 		// clientsMu.Unlock()
 
-		events <- Event{kind: "conn", conn: conn}
+		var client = &Client{
+			conn: conn,
+			send: make(chan string, 900),
+		}
+		register <- client
 
 		go readMessages(conn)
-
+		go writeMessages(client)
 	}
 }
 
 func writeMessages(client *Client) {
+	defer fmt.Println("发送协程退出:", client.conn.RemoteAddr())
 	defer client.conn.Close()
-
 	for message := range client.send {
 		err := client.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err != nil {
@@ -81,36 +81,33 @@ func writeMessages(client *Client) {
 }
 
 func handleEvents() {
-	for event := range events {
-		switch event.kind {
-		case "conn":
-			client := &Client{
-				conn: event.conn,
-				send: make(chan string, 900),
-			}
-			clients[event.conn] = client
-			go writeMessages(client)
-		case "leave":
-			removeClient(event.conn)
-		case "message":
-			broadcast(event.message)
+	for {
+		select {
+		case client := <-register:
+			clients[client.conn] = client
+
+		case conn := <-unregister:
+			removeClient(conn)
+
+		case message := <-messages:
+			broadcast(message)
 		}
 	}
 }
 
 func readMessages(conn net.Conn) {
 	defer func() {
-		events <- Event{kind: "leave", conn: conn}
+		unregister <- conn
 	}()
+
 	scanner := bufio.NewScanner(conn)
+
 	for scanner.Scan() {
 		message := scanner.Text()
-		fmt.Println("收到消息: ", message)
-		events <- Event{
-			kind:    "message",
-			conn:    conn,
-			message: conn.RemoteAddr().String() + ":" + message,
-		}
+		fmt.Println("收到消息:", message)
+
+		sender := conn.RemoteAddr().String()
+		messages <- sender + ":" + message
 	}
 }
 func broadcast(message string) {
@@ -128,7 +125,6 @@ func removeClient(conn net.Conn) {
 	if !ok {
 		return
 	}
-
 	delete(clients, conn)
 	close(client.send)
 	client.conn.Close()
